@@ -1,0 +1,156 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: git-sync-pull
+objects:
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: git-sync-pull
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    labels:
+      app: git-sync-pull
+    annotations:
+      ignore-check.kube-linter.io/minimum-three-replicas: "git-sync-pull design does not adequately account for multiple replicas"
+      ignore-check.kube-linter.io/no-readiness-probe: "git-sync-pull is not getting traffic"
+      ignore-check.kube-linter.io/no-liveness-probe: "TODO: https://issues.redhat.com/browse/APPSRE-5919"
+    name: git-sync-pull
+  spec:
+    replicas: ${{REPLICAS}}
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    selector:
+      matchLabels:
+        app: git-sync-pull
+    template:
+      metadata:
+        labels:
+          app: git-sync-pull
+      spec:
+        serviceAccountName: git-sync-pull
+        volumes:
+        - name: private-gpg-key
+          secret:
+            secretName: private-gpg-key
+        containers:
+        - image: ${IMAGE}:${IMAGE_TAG}
+          imagePullPolicy: Always
+          name: git-sync-pull
+          volumeMounts:
+          - name: private-gpg-key
+            mountPath: ${PRIVATE_GPG_PATH}
+            readOnly: true
+          env:
+          - name: PRIVATE_GPG_PATH
+            value: ${PRIVATE_GPG_PATH}
+          - name: PRIVATE_GPG_PASSPHRASE
+            valueFrom:
+              secretKeyRef:
+                key: git-sync-pull
+                name: passphrase
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                key: aws.access.key.id
+                name: git-sync-pull
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                key: aws.secret.access.key
+                name: git-sync-pull
+          - name: AWS_REGION
+            valueFrom:
+              secretKeyRef:
+                key: aws.region
+                name: git-sync-pull
+          - name: AWS_S3_BUCKET
+            valueFrom:
+              secretKeyRef:
+                key: aws.s3.bucket
+                name: git-sync-pull
+          resources:
+            requests:
+              memory: ${MEMORY_REQUESTS}
+              cpu: ${CPU_REQUESTS}
+            limits:
+              memory: ${MEMORY_LIMIT}
+              cpu: ${CPU_LIMIT}
+        - image: ${IMAGE_RELOADER}:${IMAGE_RELOADER_TAG}
+          imagePullPolicy: Always
+          name: s3-reloader
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                    key: aws.access.key.id
+                    name: git-sync-pull
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                    key: aws.region
+                    name: git-sync-pull
+            - name: AWS_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                    key: aws.s3.bucket
+                    name: git-sync-pull
+            - name: AWS_S3_KEY
+              valueFrom:
+                secretKeyRef:
+                    key: aws.s3.key
+                    name: git-sync-pull
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                    key: aws.secret.access.key
+                    name: git-sync-pull
+          args:
+          - -s3-path=s3://$(AWS_S3_BUCKET)/$(AWS_S3_KEY)
+          - -webhook-url=http://localhost:8080/sync
+          resources:
+            requests:
+              memory: ${S3RELOADER_MEMORY_REQUESTS}
+              cpu: ${S3RELOADER_CPU_REQUESTS}
+            limits:
+              memory: ${S3RELOADER_MEMORY_LIMIT}
+              cpu: ${S3RELOADER_CPU_LIMIT}
+parameters:
+- name: IMAGE
+  value: quay.io/app-sre/git-sync-pull
+  displayName: git-sync-pull image
+  description: git-sync-pull docker image. Defaults to quay.io/app-sre/git-sync-pull
+- name: IMAGE_TAG
+  value: latest
+  displayName: git-sync-pull version
+  description: git-sync-pull version which defaults to latest
+- name: PRIVATE_GPG_PATH
+  value: /gpg
+- name: MEMORY_REQUESTS
+  value: 25Mi
+- name: MEMORY_LIMIT
+  value: 100Mi
+- name: CPU_REQUESTS
+  value: 25m
+- name: CPU_LIMIT
+  value: 100m
+- name: VAULT_SECRET_NAME
+  value: vault-creds
+
+# container 's3-reloader' resources
+- name: IMAGE_RELOADER
+  value: quay.io/app-sre/s3-reload
+- name: IMAGE_RELOADER_TAG
+  value: 0bc8c97
+- name: S3RELOADER_MEMORY_REQUESTS
+  value: 20Mi
+- name: S3RELOADER_MEMORY_LIMIT
+  value: 40Mi
+- name: S3RELOADER_CPU_REQUESTS
+  value: 5m
+- name: S3RELOADER_CPU_LIMIT
+  value: 10m
